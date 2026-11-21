@@ -119,3 +119,23 @@ ExplorerAudioTools supports renaming multiple selected MP3 files in a single ope
 
 ### Uninstallation
 Run Uninstall-ExplorerAudioTools.cmd.
+
+## Tags from Filename
+
+Convert filenames into ID3 metadata:
+
+`Artist - Title.mp3` -> Artist: `Artist`, Title: `Title`
+
+- Writes Artist and Title to both ID3v1 and ID3v2.
+- ID3v2 preserves the full text; ID3v1 has length limitations.
+- Splits filenames at the first ` - ` separator.
+- Validates all selected MP3 files before writing.
+- Creates backups and attempts rollback if writing fails.
+- Supports single-file and batch processing through Explorer.
+- Other metadata is preserved where possible.
+- Tag modifications cannot be undone using Explorer Ctrl+Z.
+
+## Metadata Handling Rules
+
+- **Filename from Tags:** Read ID3v2 only; never use ID3v1 as fallback.
+- **Tags from Filename:** Write Artist and Title to ID3v1 and ID3v2.

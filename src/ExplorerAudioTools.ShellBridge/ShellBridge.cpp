@@ -12,9 +12,13 @@
 
 namespace
 {
-// Stable CLSID; must match the installation script.
-constexpr CLSID kClsid = {0xc78ffb2a, 0x2ceb, 0x475c,
+// Both CLSIDs must match Install-ExplorerAudioTools.cmd.
+// A separate class identity lets Explorer dispatch each verb reliably.
+constexpr CLSID kClsidRenameFromTags = {0xc78ffb2a, 0x2ceb, 0x475c,
     {0x92, 0xd9, 0xf8, 0x6a, 0x59, 0xc1, 0x06, 0x74}};
+constexpr CLSID kClsidTagsFromFilename = {0xb8a64e28, 0x7451, 0x47c8,
+    {0x86, 0xda, 0x8e, 0x94, 0xe7, 0x61, 0xd0, 0xc1}};
+enum class Action { RenameFromTags, TagsFromFilename };
 HMODULE g_module = nullptr;
 std::atomic<long> g_objects{0};
 std::atomic<long> g_locks{0};
@@ -74,7 +78,7 @@ HRESULT SaveSelection(const std::vector<std::wstring>& paths, std::wstring& mani
     return S_OK;
 }
 
-HRESULT StartBatch(const std::wstring& manifest)
+HRESULT StartBatch(const std::wstring& manifest, Action action)
 {
     wchar_t modulePath[32768]{};
     const DWORD chars = GetModuleFileNameW(g_module, modulePath, 32768);
@@ -88,7 +92,10 @@ HRESULT StartBatch(const std::wstring& manifest)
     exe += L"ExplorerAudioTools.exe";
 
     // Quote both paths; manifest filenames have no double-quote characters.
-    std::wstring command = L"\"" + exe + L"\" --selection-file \"" + manifest + L"\"";
+    std::wstring command = L"\"" + exe + L"\"";
+    if (action == Action::TagsFromFilename)
+        command += L" --tags-from-filename";
+    command += L" --selection-file \"" + manifest + L"\"";
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
@@ -103,7 +110,7 @@ HRESULT StartBatch(const std::wstring& manifest)
 class Command final : public IExecuteCommand, public IObjectWithSelection
 {
 public:
-    Command() { ++g_objects; }
+    explicit Command(Action action) : action_(action) { ++g_objects; }
     ~Command()
     {
         if (selection_) selection_->Release();
@@ -180,7 +187,7 @@ public:
         std::wstring manifest;
         hr = SaveSelection(paths, manifest);
         if (FAILED(hr)) return hr;
-        hr = StartBatch(manifest);
+        hr = StartBatch(manifest, action_);
         if (FAILED(hr)) DeleteFileW(manifest.c_str());
         return hr;
     }
@@ -188,12 +195,13 @@ public:
 private:
     std::atomic<ULONG> refs_{1};
     IShellItemArray* selection_ = nullptr;
+    Action action_;
 };
 
 class Factory final : public IClassFactory
 {
 public:
-    Factory() { ++g_objects; }
+    explicit Factory(Action action) : action_(action) { ++g_objects; }
     ~Factory() { --g_objects; }
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** output) override
@@ -218,7 +226,7 @@ public:
         if (!output) return E_POINTER;
         *output = nullptr;
         if (outer) return CLASS_E_NOAGGREGATION;
-        Command* command = new (std::nothrow) Command();
+        Command* command = new (std::nothrow) Command(action_);
         if (!command) return E_OUTOFMEMORY;
         HRESULT hr = command->QueryInterface(iid, output);
         command->Release();
@@ -232,6 +240,7 @@ public:
     }
 private:
     std::atomic<ULONG> refs_{1};
+    Action action_;
 };
 } // namespace
 
@@ -260,8 +269,14 @@ STDAPI DllGetClassObject(
 {
     if (!output) return E_POINTER;
     *output = nullptr;
-    if (!IsEqualCLSID(clsid, kClsid)) return CLASS_E_CLASSNOTAVAILABLE;
-    Factory* factory = new (std::nothrow) Factory();
+    Action action;
+    if (IsEqualCLSID(clsid, kClsidRenameFromTags))
+        action = Action::RenameFromTags;
+    else if (IsEqualCLSID(clsid, kClsidTagsFromFilename))
+        action = Action::TagsFromFilename;
+    else
+        return CLASS_E_CLASSNOTAVAILABLE;
+    Factory* factory = new (std::nothrow) Factory(action);
     if (!factory) return E_OUTOFMEMORY;
     HRESULT hr = factory->QueryInterface(iid, output);
     factory->Release();

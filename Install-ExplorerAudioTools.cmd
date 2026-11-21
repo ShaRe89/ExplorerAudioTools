@@ -1,45 +1,53 @@
 @echo off
 setlocal DisableDelayedExpansion
-rem ExplorerAudioTools native COM multiselect installer; HKCU, no admin rights.
-rem Installs the native bridge alongside the C# executable.
+rem ExplorerAudioTools: per-user native COM Explorer verbs (single + multi-selection).
+rem Keep this installer in the repository root, next to src\.
 set "EAT_PUBLISH=%~dp0src\ExplorerAudioTools\bin\Release\net10.0-windows\win-x64\publish"
 set "EAT_EXE=%EAT_PUBLISH%\ExplorerAudioTools.exe"
 set "EAT_BRIDGE=%EAT_PUBLISH%\ExplorerAudioTools.ShellBridge.dll"
-set "EAT_CLSID={C78FFB2A-2CEB-475C-92D9-F86A59C10674}"
-set "EAT_CLASS=HKCU\Software\Classes\CLSID\%EAT_CLSID%\InprocServer32"
+set "EAT_CLSID_RENAME={C78FFB2A-2CEB-475C-92D9-F86A59C10674}"
+set "EAT_CLSID_TAGS={B8A64E28-7451-47C8-86DA-8E94E761D0C1}"
 set "EAT_MENU=HKCU\Software\Classes\SystemFileAssociations\.mp3\shell\ExplorerAudioTools"
-set "EAT_VERB=%EAT_MENU%\shell\RenameFromTags"
 
 if not exist "%EAT_EXE%" (
-    echo ERROR: Missing C# executable. Run dotnet publish first.
+    echo ERROR: C# executable missing. Run dotnet publish first.
     pause
     exit /b 1
 )
 if not exist "%EAT_BRIDGE%" (
-    echo ERROR: Missing ShellBridge DLL. Run Build-ShellBridge.cmd first.
+    echo ERROR: Native COM bridge DLL missing. Run Build-ShellBridge.cmd first.
     pause
     exit /b 1
 )
 
-rem Register lightweight unmanaged COM adapter for the current user.
-reg add "%EAT_CLASS%" /ve /t REG_SZ /d "%EAT_BRIDGE%" /f >nul || goto :fail
-reg add "%EAT_CLASS%" /v ThreadingModel /t REG_SZ /d "Apartment" /f >nul || goto :fail
+rem Both CLSIDs are implemented by the same unmanaged ShellBridge DLL.
+reg add "HKCU\Software\Classes\CLSID\%EAT_CLSID_RENAME%\InprocServer32" /ve /t REG_SZ /d "%EAT_BRIDGE%" /f >nul || goto :fail
+reg add "HKCU\Software\Classes\CLSID\%EAT_CLSID_RENAME%\InprocServer32" /v ThreadingModel /t REG_SZ /d "Apartment" /f >nul || goto :fail
+reg add "HKCU\Software\Classes\CLSID\%EAT_CLSID_TAGS%\InprocServer32" /ve /t REG_SZ /d "%EAT_BRIDGE%" /f >nul || goto :fail
+reg add "HKCU\Software\Classes\CLSID\%EAT_CLSID_TAGS%\InprocServer32" /v ThreadingModel /t REG_SZ /d "Apartment" /f >nul || goto :fail
 
-rem Replace only our own previous single-file verb.
+rem Recreate ONLY our own context-menu subtree.
 reg delete "%EAT_MENU%" /f >nul 2>nul
 reg add "%EAT_MENU%" /v MUIVerb /t REG_SZ /d "ExplorerAudioTools" /f >nul || goto :fail
 reg add "%EAT_MENU%" /v SubCommands /t REG_SZ /d "" /f >nul || goto :fail
 reg add "%EAT_MENU%" /v MultiSelectModel /t REG_SZ /d "Player" /f >nul || goto :fail
-reg add "%EAT_VERB%" /v MUIVerb /t REG_SZ /d "Dateiname aus ID3v2-Tags" /f >nul || goto :fail
-reg add "%EAT_VERB%" /v MultiSelectModel /t REG_SZ /d "Player" /f >nul || goto :fail
-reg add "%EAT_VERB%\command" /v DelegateExecute /t REG_SZ /d "%EAT_CLSID%" /f >nul || goto :fail
 
-echo ExplorerAudioTools native multi-selection menu registered for current user.
-echo Windows 11: Right-click selected MP3 files ^> Show more options ^> ExplorerAudioTools.
+set "EAT_RENAME=%EAT_MENU%\shell\RenameFromTags"
+reg add "%EAT_RENAME%" /v MUIVerb /t REG_SZ /d "Dateiname aus ID3v2-Tags" /f >nul || goto :fail
+reg add "%EAT_RENAME%" /v MultiSelectModel /t REG_SZ /d "Player" /f >nul || goto :fail
+reg add "%EAT_RENAME%\command" /v DelegateExecute /t REG_SZ /d "%EAT_CLSID_RENAME%" /f >nul || goto :fail
+
+set "EAT_TAGS=%EAT_MENU%\shell\TagsFromFilename"
+reg add "%EAT_TAGS%" /v MUIVerb /t REG_SZ /d "Tags aus Dateiname" /f >nul || goto :fail
+reg add "%EAT_TAGS%" /v MultiSelectModel /t REG_SZ /d "Player" /f >nul || goto :fail
+reg add "%EAT_TAGS%\command" /v DelegateExecute /t REG_SZ /d "%EAT_CLSID_TAGS%" /f >nul || goto :fail
+
+echo ExplorerAudioTools installed: two native context-menu commands.
+echo Windows 11: select MP3 files ^> Show more options ^> ExplorerAudioTools.
 pause
 exit /b 0
 
 :fail
-echo ERROR: Registry registration failed. Prior menu may require reinstalling.
+echo ERROR: Could not register ExplorerAudioTools. Installation may be incomplete.
 pause
 exit /b 1

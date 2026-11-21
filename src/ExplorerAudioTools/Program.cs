@@ -13,12 +13,23 @@ internal static class Program
 
         try
         {
-            var preview = args.Length > 0 && args[0] == "--dry-run";
-            var paths = preview ? args[1..] : args;
+            // Default stays compatible with the currently installed Explorer verb.
+            // The reverse operation uses an explicit opt-in argument.
+            var arguments = new List<string>(args);
+            var preview = false;
+            var fromFilename = false;
+            while (arguments.Count > 0)
+            {
+                if (arguments[0] == "--dry-run")
+                    preview = true;
+                else if (arguments[0] == "--tags-from-filename")
+                    fromFilename = true;
+                else
+                    break;
+                arguments.RemoveAt(0);
+            }
 
-            // The shell COM bridge writes ALL selected paths to a UTF-16 LE
-            // manifest before launching this process exactly once.
-            // Never fall back to operating on a subset of the selection.
+            string[] paths = arguments.ToArray();
             if (paths.Length > 0 && paths[0] == "--selection-file")
             {
                 if (paths.Length != 2)
@@ -33,8 +44,6 @@ internal static class Program
                 }
                 finally
                 {
-                    // The bridge creates a unique temporary manifest per invocation.
-                    // Even failed validation must not leave it behind.
                     try { File.Delete(manifestPath); } catch (IOException) { }
                     catch (UnauthorizedAccessException) { }
                 }
@@ -47,15 +56,33 @@ internal static class Program
             if (normalized.Distinct(StringComparer.OrdinalIgnoreCase).Count() != normalized.Length)
                 throw new InvalidOperationException("Dieselbe Datei wurde mehrfach übergeben. Abbruch ohne Änderungen.");
 
-            // Full validation first. The IFileOperation batch only starts after
-            // EVERY source has passed and target collisions have been excluded.
+            if (fromFilename)
+            {
+                // Validate the ENTIRE selection before any ID3v2 tag is changed.
+                var changes = normalized.Select(TagsFromFilename.Prepare).ToArray();
+                if (preview)
+                {
+                    var summary = string.Join(Environment.NewLine,
+                        changes.Select(p => $"{Path.GetFileName(p.Source)}  →  Artist: {p.Artist}; Title: {p.Title}"
+                            + (p.NeedsUpdate ? "" : " (bereits korrekt)")));
+                    MessageBox.Show(summary, "ExplorerAudioTools – Vorschau (keine Änderungen)",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    TagsFromFilename.ApplyBatch(changes);
+                }
+                return 0;
+            }
+
+            // Existing, tested file-rename path is intentionally unchanged.
             var plans = new List<RenameFromTags.RenamePlan>();
             var destinations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var path in normalized)
             {
                 var candidate = RenameFromTags.Prepare(path);
                 if (candidate is not { } plan)
-                    continue; // Already named correctly, still validated above.
+                    continue;
 
                 var destination = Path.Combine(Path.GetDirectoryName(plan.Source)!, plan.TargetName);
                 if (!destinations.Add(destination))
@@ -76,7 +103,6 @@ internal static class Program
 
             if (plans.Count > 0)
                 ShellRename.RenameBatch(plans);
-
             return 0;
         }
         catch (Exception ex)
