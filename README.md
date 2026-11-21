@@ -86,3 +86,36 @@ ExplorerAudioTools/
 ## Lizenz
 
 MIT – siehe [LICENSE](LICENSE).
+
+## Native Explorer Multi-Selection
+
+ExplorerAudioTools supports renaming multiple selected MP3 files in a single operation.
+
+### Architecture
+- C# (.NET 10): ID3v2 parsing, validation and renaming.
+- Native C++ COM bridge: IExecuteCommand and IObjectWithSelection.
+- All selected files are passed to the C# application in one invocation.
+- Windows IFileOperation provides native Explorer Undo support.
+
+### Build and Installation
+1. Publish the C# project for win-x64.
+2. Run Build-ShellBridge.cmd (Visual Studio C++ Build Tools required).
+3. Run Install-ExplorerAudioTools.cmd (no administrator privileges required).
+
+.NET 10 Desktop Runtime is required.
+
+### Verified
+- Single-file renaming
+- Batch renaming
+- Duplicate target detection
+- Native Explorer Undo for multiple files
+- No PowerShell dependency
+
+### Limitations
+- Windows file operations are not fully transactional.
+- Rollback is best-effort.
+- Installed DLLs may require an Explorer restart before rebuilding.
+- Moving the installation directory requires reinstalling.
+
+### Uninstallation
+Run Uninstall-ExplorerAudioTools.cmd.

@@ -1,40 +1,45 @@
 @echo off
 setlocal DisableDelayedExpansion
-
-rem ExplorerAudioTools C# installer (per-user, no administrator rights).
-rem Put this .cmd in the repository root, next to src\.
-set "EAT_EXE=%~dp0src\ExplorerAudioTools\bin\Release\net10.0-windows\win-x64\publish\ExplorerAudioTools.exe"
-set "EAT_KEY=HKCU\Software\Classes\SystemFileAssociations\.mp3\shell\ExplorerAudioTools"
-set "EAT_VERB=%EAT_KEY%\shell\RenameFromTags"
+rem ExplorerAudioTools native COM multiselect installer; HKCU, no admin rights.
+rem Installs the native bridge alongside the C# executable.
+set "EAT_PUBLISH=%~dp0src\ExplorerAudioTools\bin\Release\net10.0-windows\win-x64\publish"
+set "EAT_EXE=%EAT_PUBLISH%\ExplorerAudioTools.exe"
+set "EAT_BRIDGE=%EAT_PUBLISH%\ExplorerAudioTools.ShellBridge.dll"
+set "EAT_CLSID={C78FFB2A-2CEB-475C-92D9-F86A59C10674}"
+set "EAT_CLASS=HKCU\Software\Classes\CLSID\%EAT_CLSID%\InprocServer32"
+set "EAT_MENU=HKCU\Software\Classes\SystemFileAssociations\.mp3\shell\ExplorerAudioTools"
+set "EAT_VERB=%EAT_MENU%\shell\RenameFromTags"
 
 if not exist "%EAT_EXE%" (
-    echo ERROR: C# executable not found:
-    echo "%EAT_EXE%"
-    echo Build with dotnet publish first; keep this installer in the repository root.
+    echo ERROR: Missing C# executable. Run dotnet publish first.
+    pause
+    exit /b 1
+)
+if not exist "%EAT_BRIDGE%" (
+    echo ERROR: Missing ShellBridge DLL. Run Build-ShellBridge.cmd first.
     pause
     exit /b 1
 )
 
-rem Replace our old PowerShell context-menu registration, not any other menu keys.
-reg delete "%EAT_KEY%" /f >nul 2>nul
+rem Register lightweight unmanaged COM adapter for the current user.
+reg add "%EAT_CLASS%" /ve /t REG_SZ /d "%EAT_BRIDGE%" /f >nul || goto :fail
+reg add "%EAT_CLASS%" /v ThreadingModel /t REG_SZ /d "Apartment" /f >nul || goto :fail
 
-rem Static cascading menu for .mp3 files. One-file mode is intentional.
-reg add "%EAT_KEY%" /v MUIVerb /t REG_SZ /d "ExplorerAudioTools" /f >nul || goto :fail
-reg add "%EAT_KEY%" /v SubCommands /t REG_SZ /d "" /f >nul || goto :fail
-reg add "%EAT_KEY%" /v MultiSelectModel /t REG_SZ /d "Single" /f >nul || goto :fail
+rem Replace only our own previous single-file verb.
+reg delete "%EAT_MENU%" /f >nul 2>nul
+reg add "%EAT_MENU%" /v MUIVerb /t REG_SZ /d "ExplorerAudioTools" /f >nul || goto :fail
+reg add "%EAT_MENU%" /v SubCommands /t REG_SZ /d "" /f >nul || goto :fail
+reg add "%EAT_MENU%" /v MultiSelectModel /t REG_SZ /d "Player" /f >nul || goto :fail
 reg add "%EAT_VERB%" /v MUIVerb /t REG_SZ /d "Dateiname aus ID3v2-Tags" /f >nul || goto :fail
-reg add "%EAT_VERB%" /v MultiSelectModel /t REG_SZ /d "Single" /f >nul || goto :fail
+reg add "%EAT_VERB%" /v MultiSelectModel /t REG_SZ /d "Player" /f >nul || goto :fail
+reg add "%EAT_VERB%\command" /v DelegateExecute /t REG_SZ /d "%EAT_CLSID%" /f >nul || goto :fail
 
-rem %%1 deliberately writes a literal %1 Explorer placeholder into the registry.
-rem The WinExe executable starts directly, with no PowerShell or console window.
-reg add "%EAT_VERB%\command" /ve /t REG_SZ /d "\"%EAT_EXE%\" \"%%1\"" /f >nul || goto :fail
-
-echo ExplorerAudioTools C# context menu installed for the current user.
-echo Windows 11: Right-click MP3 ^> Show more options ^> ExplorerAudioTools.
+echo ExplorerAudioTools native multi-selection menu registered for current user.
+echo Windows 11: Right-click selected MP3 files ^> Show more options ^> ExplorerAudioTools.
 pause
 exit /b 0
 
 :fail
-echo ERROR: Could not register ExplorerAudioTools. Check permissions and retry.
+echo ERROR: Registry registration failed. Prior menu may require reinstalling.
 pause
 exit /b 1

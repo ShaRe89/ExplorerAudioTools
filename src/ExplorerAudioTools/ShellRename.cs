@@ -1,43 +1,109 @@
-using System.Runtime.InteropServices;
 using System.IO;
+using System.Runtime.InteropServices;
 
 namespace ExplorerAudioTools;
 
 /// <summary>
-/// Performs the rename via the Windows Shell so Windows can place it in the
-/// Explorer session's Undo history. No console or PowerShell is launched.
+/// Queues all renames in ONE IFileOperation so the normal Explorer Undo mechanism
+/// can track them. A best-effort rollback is performed if Windows reports failure.
+/// Note: Windows does not provide an atomic multi-file rename transaction.
 /// </summary>
 internal static class ShellRename
 {
-    // Windows 8+: mark this as a user-invoked operation eligible for Explorer Undo.
     private const uint FOFX_ADDUNDORECORD = 0x20000000;
     private const uint FOF_SILENT = 0x0004;
     private const uint FOF_NOERRORUI = 0x0400;
     private const uint FOFX_EARLYFAILURE = 0x00100000;
-    private const uint FOF_NOCONFIRMATION = 0x0010;
 
-    internal static void Rename(string source, string newName)
+    internal static void RenameBatch(IReadOnlyList<RenameFromTags.RenamePlan> plans)
     {
-        var itemId = typeof(IShellItem).GUID;
-        SHCreateItemFromParsingName(source, IntPtr.Zero, ref itemId, out IShellItem item);
-        IFileOperation operation = (IFileOperation)new FileOperationComObject();
+        if (plans.Count == 0)
+            return;
+
+        // Perform one batch; this operation must not be split into separate
+        // Explorer activations, otherwise collective validation is impossible.
         try
         {
-            operation.SetOperationFlags(FOFX_ADDUNDORECORD | FOF_SILENT |
-                FOF_NOERRORUI | FOFX_EARLYFAILURE | FOF_NOCONFIRMATION);
-            operation.RenameItem(item, newName, IntPtr.Zero);
+            Execute(plans.Select(p => (p.Source, p.TargetName)).ToArray(), recordUndo: true);
+            if (plans.Any(p => !HasExactFileName(p.Source, p.TargetName)))
+                throw new IOException("Mindestens eine Umbenennung wurde nicht ausgeführt.");
+        }
+        catch (Exception originalError)
+        {
+            // Only revert entries that now have exactly the intended target name.
+            // Source/target conflicts were rejected by the validation phase.
+            var completed = plans
+                .Where(p => HasExactFileName(p.Source, p.TargetName))
+                .Select(p => (Source: Path.Combine(Path.GetDirectoryName(p.Source)!, p.TargetName),
+                              TargetName: Path.GetFileName(p.Source)))
+                .Reverse()
+                .ToArray();
+
+            try
+            {
+                if (completed.Length > 0)
+                    Execute(completed, recordUndo: false);
+                if (plans.Any(p => !HasExactFileName(p.Source, Path.GetFileName(p.Source))))
+                    throw new IOException("Nicht alle ursprünglichen Dateinamen konnten wiederhergestellt werden.");
+            }
+            catch (Exception rollbackError)
+            {
+                throw new IOException(
+                    "Die Umbenennung ist fehlgeschlagen und das Zurückrollen war unvollständig. " +
+                    "Bitte die Dateinamen manuell kontrollieren. " + rollbackError.Message,
+                    new AggregateException(originalError, rollbackError));
+            }
+
+            throw new IOException(
+                "Die Umbenennung ist fehlgeschlagen. Bereits geänderte Namen wurden zurückgesetzt. " +
+                "Bitte die Explorer-Rückgängig-Historie vor weiteren Aktionen prüfen. " + originalError.Message,
+                originalError);
+        }
+    }
+
+    private static bool HasExactFileName(string originalSource, string name)
+    {
+        var directory = Path.GetDirectoryName(originalSource)!;
+        var requestedPath = Path.Combine(directory, name);
+        if (!File.Exists(requestedPath))
+            return false;
+
+        // Exact enumeration also detects case-only renames on case-insensitive NTFS.
+        return Directory.EnumerateFiles(directory, name, SearchOption.TopDirectoryOnly)
+            .Any(p => string.Equals(Path.GetFileName(p), name, StringComparison.Ordinal));
+    }
+
+    private static void Execute((string Source, string TargetName)[] changes, bool recordUndo)
+    {
+        var items = new List<IShellItem>();
+        IFileOperation? operation = null;
+        try
+        {
+            operation = (IFileOperation)new FileOperationComObject();
+            var flags = FOF_SILENT | FOF_NOERRORUI | FOFX_EARLYFAILURE;
+            if (recordUndo)
+                flags |= FOFX_ADDUNDORECORD;
+            operation.SetOperationFlags(flags);
+
+            foreach (var (source, targetName) in changes)
+            {
+                var itemId = typeof(IShellItem).GUID;
+                SHCreateItemFromParsingName(source, IntPtr.Zero, ref itemId, out var item);
+                items.Add(item);
+                operation.RenameItem(item, targetName, IntPtr.Zero);
+            }
+
             operation.PerformOperations();
             operation.GetAnyOperationsAborted(out bool aborted);
-
-            var destination = Path.Combine(Path.GetDirectoryName(source)!, newName);
-            if (aborted || !File.Exists(destination) ||
-                (!string.Equals(source, destination, StringComparison.OrdinalIgnoreCase) && File.Exists(source)))
-                throw new IOException("Windows konnte die Umbenennung nicht abschließen.");
+            if (aborted)
+                throw new IOException("Die Windows-Dateioperation wurde abgebrochen.");
         }
         finally
         {
-            Marshal.ReleaseComObject(operation);
-            Marshal.ReleaseComObject(item);
+            foreach (var item in items)
+                Marshal.ReleaseComObject(item);
+            if (operation is not null)
+                Marshal.ReleaseComObject(operation);
         }
     }
 
